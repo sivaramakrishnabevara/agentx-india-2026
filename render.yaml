@@ -1,0 +1,27 @@
+services:
+  - type: web
+    name: agentx-india-2026-backend
+    env: python
+    buildCommand: "pip install -r requirements.txt"
+    startCommand: "uvicorn backend.app.main:app --host 0.0.0.0 --port $PORT"
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.11.0
+      - key: JWT_SECRET_KEY
+        generateValue: true
+      - key: ADMIN_INITIAL_USERNAME
+        value: admin
+      - key: ADMIN_INITIAL_PASSWORD
+        value: admin@agentx2026
+      - key: FRONTEND_URL
+        value: https://agentxindia2026.netlify.app
+      - key: CORS_ORIGINS
+        value: https://agentxindia2026.netlify.app,http://localhost:5173
+      - key: UPI_ID
+        value: 9618164396-3@ybl
+      - key: UPI_DISPLAY_NAME
+        value: agentx2026
+      - key: FEE_PER_TEAM
+        value: "199"
+      - key: OFFICIAL_EMAIL
+        value: sivaramakrishna54599@gmail.com
