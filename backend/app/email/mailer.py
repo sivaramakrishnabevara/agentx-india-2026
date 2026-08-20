@@ -20,9 +20,9 @@ def is_valid_email(email: str) -> bool:
 def get_email_config():
     """
     Retrieves email configuration from environment variables.
-    Supports RESEND_API_KEY, EMAIL_FROM (or SMTP_FROM_EMAIL), EMAIL_FROM_NAME (or SMTP_FROM_NAME).
+    Supports BREVO_API_KEY, EMAIL_FROM (or SMTP_FROM_EMAIL), EMAIL_FROM_NAME (or SMTP_FROM_NAME).
     """
-    resend_api_key = os.getenv("RESEND_API_KEY", "").strip()
+    brevo_api_key = os.getenv("BREVO_API_KEY", "").strip()
     
     from_email = os.getenv("EMAIL_FROM", "").strip() or os.getenv("SMTP_FROM_EMAIL", "notifications@agentxindia.com").strip()
     from_name = os.getenv("EMAIL_FROM_NAME", "").strip() or os.getenv("SMTP_FROM_NAME", "AGENTX INDIA 2026 Team").strip()
@@ -37,7 +37,7 @@ def get_email_config():
     smtp_password = os.getenv("SMTP_PASSWORD", "").strip()
 
     return {
-        "resend_api_key": resend_api_key,
+        "brevo_api_key": brevo_api_key,
         "from_email": from_email,
         "from_name": from_name,
         "base_url": base_url,
@@ -49,15 +49,15 @@ def get_email_config():
 
 def get_safe_error_message(err: Exception | str) -> str:
     """
-    Returns sanitized error string ensuring RESEND_API_KEY and SMTP_PASSWORD are never leaked.
+    Returns sanitized error string ensuring BREVO_API_KEY and SMTP_PASSWORD are never leaked.
     """
     msg = str(err)
     config = get_email_config()
-    resend_key = config["resend_api_key"]
+    brevo_key = config["brevo_api_key"]
     smtp_pwd = config["smtp_password"]
 
-    if resend_key and len(resend_key) > 4 and resend_key in msg:
-        msg = msg.replace(resend_key, "re_******")
+    if brevo_key and len(brevo_key) > 4 and brevo_key in msg:
+        msg = msg.replace(brevo_key, "xkeysib-******")
     if smtp_pwd and len(smtp_pwd) > 2 and smtp_pwd in msg:
         msg = msg.replace(smtp_pwd, "******")
     return msg
@@ -147,9 +147,9 @@ class BaseEmailProvider(ABC):
     ) -> dict:
         pass
 
-class ResendEmailProvider(BaseEmailProvider):
+class BrevoEmailProvider(BaseEmailProvider):
     """
-    Production Email Provider using Resend HTTP API (https://api.resend.com/emails).
+    Production Email Provider using Brevo Transactional Email HTTPS API (https://api.brevo.com/v3/smtp/email).
     Uses standard HTTPS outbound connection on port 443.
     """
 
@@ -186,20 +186,25 @@ class ResendEmailProvider(BaseEmailProvider):
         )
 
         headers = {
-            "Authorization": f"Bearer {self.api_key}",
+            "api-key": self.api_key,
             "Content-Type": "application/json"
         }
 
-        from_header = f"{from_name} <{from_email}>" if from_name else from_email
-
         payload = {
-            "from": from_header,
-            "to": [to_email],
+            "sender": {
+                "name": from_name,
+                "email": from_email
+            },
+            "to": [
+                {
+                    "email": to_email
+                }
+            ],
             "subject": subject,
-            "html": html_body
+            "htmlContent": html_body
         }
 
-        url = "https://api.resend.com/emails"
+        url = "https://api.brevo.com/v3/smtp/email"
         last_error = None
         last_status = None
 
@@ -210,21 +215,25 @@ class ResendEmailProvider(BaseEmailProvider):
 
                 if 200 <= resp.status_code < 300:
                     data = resp.json() if resp.text else {}
-                    resend_id = data.get("id", "N/A")
-                    print(f"[Email Sent] Attempt {attempt}/{max_attempts} to {to_email} via Resend HTTPS API: Status {resp.status_code} | Resend ID: {resend_id}")
-                    return {
-                        "to_email": to_email,
-                        "success": True,
-                        "attempts": attempt,
-                        "http_status": resp.status_code,
-                        "resend_id": resend_id,
-                        "provider": "resend",
-                        "error": None
-                    }
+                    message_id = data.get("messageId") or data.get("message_id")
+                    if message_id:
+                        print(f"[Email Sent] Attempt {attempt}/{max_attempts} to {to_email} via Brevo HTTPS API: Status {resp.status_code} | Message ID: {message_id}")
+                        return {
+                            "to_email": to_email,
+                            "success": True,
+                            "attempts": attempt,
+                            "http_status": resp.status_code,
+                            "message_id": str(message_id),
+                            "provider": "brevo",
+                            "error": None
+                        }
+                    else:
+                        last_error = f"Brevo API Error (HTTP {resp.status_code}): Missing messageId in response payload"
+                        print(f"[Email Error] Attempt {attempt}/{max_attempts} to {to_email} via Brevo: {last_error}")
                 else:
                     err_msg = get_safe_error_message(resp.text)
-                    last_error = f"Resend API Error (HTTP {resp.status_code}): {err_msg}"
-                    print(f"[Email Error] Attempt {attempt}/{max_attempts} to {to_email} via Resend: {last_error}")
+                    last_error = f"Brevo API Error (HTTP {resp.status_code}): {err_msg}"
+                    print(f"[Email Error] Attempt {attempt}/{max_attempts} to {to_email} via Brevo: {last_error}")
 
                     if 400 <= resp.status_code < 500 and resp.status_code != 429:
                         return {
@@ -232,17 +241,18 @@ class ResendEmailProvider(BaseEmailProvider):
                             "success": False,
                             "attempts": attempt,
                             "http_status": resp.status_code,
-                            "provider": "resend",
+                            "message_id": None,
+                            "provider": "brevo",
                             "error": last_error
                         }
 
-                    if attempt < max_attempts and retry_delay > 0:
-                        time.sleep(retry_delay)
+                if attempt < max_attempts and retry_delay > 0:
+                    time.sleep(retry_delay)
 
             except Exception as e:
                 safe_err = get_safe_error_message(e)
-                last_error = f"Resend HTTP Request Exception: {safe_err}"
-                print(f"[Email Error] Attempt {attempt}/{max_attempts} to {to_email} via Resend: {last_error}")
+                last_error = f"Brevo HTTP Request Exception: {safe_err}"
+                print(f"[Email Error] Attempt {attempt}/{max_attempts} to {to_email} via Brevo: {last_error}")
                 if attempt < max_attempts and retry_delay > 0:
                     time.sleep(retry_delay)
 
@@ -251,7 +261,8 @@ class ResendEmailProvider(BaseEmailProvider):
             "success": False,
             "attempts": max_attempts,
             "http_status": last_status,
-            "provider": "resend",
+            "message_id": None,
+            "provider": "brevo",
             "error": last_error or "Maximum retry attempts exceeded"
         }
 
@@ -361,12 +372,12 @@ def get_email_provider() -> BaseEmailProvider:
     Factory function selecting current active Email Provider based on environment configuration.
     """
     config = get_email_config()
-    resend_key = config["resend_api_key"]
+    brevo_key = config["brevo_api_key"]
     smtp_user = config["smtp_username"]
     smtp_pwd = config["smtp_password"]
 
-    if resend_key:
-        return ResendEmailProvider(api_key=resend_key)
+    if brevo_key:
+        return BrevoEmailProvider(api_key=brevo_key)
     elif smtp_user and smtp_pwd and smtp_pwd != "your_smtp_app_password":
         return SMTPEmailProvider()
     else:

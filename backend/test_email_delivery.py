@@ -11,12 +11,12 @@ from app.email.mailer import (
     send_confirmation_email,
     send_team_confirmation_emails,
     get_email_provider,
-    ResendEmailProvider,
+    BrevoEmailProvider,
     SMTPEmailProvider,
     SimulationEmailProvider
 )
 
-class TestResendHTTPSAndEmailDelivery(unittest.TestCase):
+class TestBrevoHTTPSAndEmailDelivery(unittest.TestCase):
 
     def setUp(self):
         self.original_env = dict(os.environ)
@@ -50,13 +50,13 @@ class TestResendHTTPSAndEmailDelivery(unittest.TestCase):
 
     def test_provider_factory_selection(self):
         """Test active provider selection based on environment variables."""
-        # 1. Resend Provider selected when RESEND_API_KEY is present
-        os.environ["RESEND_API_KEY"] = "re_test_key_12345"
+        # 1. Brevo Provider selected when BREVO_API_KEY is present
+        os.environ["BREVO_API_KEY"] = "xkeysib-test_key_12345"
         provider = get_email_provider()
-        self.assertIsInstance(provider, ResendEmailProvider)
+        self.assertIsInstance(provider, BrevoEmailProvider)
 
-        # 2. SMTP Provider selected when RESEND_API_KEY is absent but SMTP credentials present
-        del os.environ["RESEND_API_KEY"]
+        # 2. SMTP Provider selected when BREVO_API_KEY is absent but SMTP credentials present
+        del os.environ["BREVO_API_KEY"]
         os.environ["SMTP_USERNAME"] = "user@test.com"
         os.environ["SMTP_PASSWORD"] = "smtp_pass_123"
         provider = get_email_provider()
@@ -69,28 +69,29 @@ class TestResendHTTPSAndEmailDelivery(unittest.TestCase):
         self.assertIsInstance(provider, SimulationEmailProvider)
 
     def test_safe_error_message_masks_keys_and_passwords(self):
-        """Verify that RESEND_API_KEY and SMTP_PASSWORD are never leaked in error messages."""
-        os.environ["RESEND_API_KEY"] = "re_secret_resend_api_key_8899"
+        """Verify that BREVO_API_KEY and SMTP_PASSWORD are never leaked in error messages."""
+        os.environ["BREVO_API_KEY"] = "xkeysib-secret_brevo_api_key_8899"
         os.environ["SMTP_PASSWORD"] = "secret_smtp_pass_9988"
 
-        err = Exception("Failed call with key re_secret_resend_api_key_8899 and pass secret_smtp_pass_9988")
+        err = Exception("Failed call with key xkeysib-secret_brevo_api_key_8899 and pass secret_smtp_pass_9988")
         safe_msg = get_safe_error_message(err)
 
-        self.assertNotIn("re_secret_resend_api_key_8899", safe_msg)
+        self.assertNotIn("xkeysib-secret_brevo_api_key_8899", safe_msg)
         self.assertNotIn("secret_smtp_pass_9988", safe_msg)
-        self.assertIn("re_******", safe_msg)
+        self.assertIn("xkeysib-******", safe_msg)
         self.assertIn("******", safe_msg)
 
     @patch("requests.post")
-    def test_resend_successful_email_send(self, mock_post):
-        """Test successful HTTPS email dispatch via Resend API."""
-        os.environ["RESEND_API_KEY"] = "re_valid_api_key_123"
+    def test_brevo_successful_email_send(self, mock_post):
+        """Test successful HTTPS email dispatch via Brevo Transactional Email API."""
+        os.environ["BREVO_API_KEY"] = "xkeysib-valid_api_key_123"
         os.environ["EMAIL_FROM"] = "notifications@agentxindia.com"
         os.environ["EMAIL_FROM_NAME"] = "AGENTX INDIA 2026 Team"
 
         mock_resp = MagicMock()
-        mock_resp.status_code = 200
-        mock_resp.json.return_value = {"id": "resend_msg_id_990011"}
+        mock_resp.status_code = 201
+        mock_resp.text = '{"messageId": "<20260820.12345@smtp-relay.brevo.com>"}'
+        mock_resp.json.return_value = {"messageId": "<20260820.12345@smtp-relay.brevo.com>"}
         mock_post.return_value = mock_resp
 
         res = send_confirmation_email(
@@ -105,19 +106,79 @@ class TestResendHTTPSAndEmailDelivery(unittest.TestCase):
 
         self.assertTrue(res["success"])
         self.assertEqual(res["attempts"], 1)
-        self.assertEqual(res["http_status"], 200)
-        self.assertEqual(res["resend_id"], "resend_msg_id_990011")
+        self.assertEqual(res["http_status"], 201)
+        self.assertEqual(res["message_id"], "<20260820.12345@smtp-relay.brevo.com>")
 
         mock_post.assert_called_once()
+        call_url = mock_post.call_args[0][0]
         call_kwargs = mock_post.call_args[1]
-        self.assertEqual(call_kwargs["headers"]["Authorization"], "Bearer re_valid_api_key_123")
-        self.assertEqual(call_kwargs["json"]["to"], ["sivaramakrishnabevaraa@gmail.com"])
-        self.assertEqual(call_kwargs["json"]["from"], "AGENTX INDIA 2026 Team <notifications@agentxindia.com>")
+
+        self.assertEqual(call_url, "https://api.brevo.com/v3/smtp/email")
+        self.assertEqual(call_kwargs["headers"]["api-key"], "xkeysib-valid_api_key_123")
+        self.assertEqual(call_kwargs["headers"]["Content-Type"], "application/json")
+        self.assertEqual(call_kwargs["json"]["sender"], {"name": "AGENTX INDIA 2026 Team", "email": "notifications@agentxindia.com"})
+        self.assertEqual(call_kwargs["json"]["to"], [{"email": "sivaramakrishnabevaraa@gmail.com"}])
+        self.assertIn("htmlContent", call_kwargs["json"])
+        self.assertIn("subject", call_kwargs["json"])
 
     @patch("requests.post")
-    def test_resend_transient_error_retry_success(self, mock_post):
-        """Test Resend HTTP 500/503 retry logic (fails twice, succeeds on 3rd attempt)."""
-        os.environ["RESEND_API_KEY"] = "re_valid_api_key_123"
+    def test_brevo_missing_message_id_failure(self, mock_post):
+        """Test that missing messageId in Brevo response results in delivery failure."""
+        os.environ["BREVO_API_KEY"] = "xkeysib-valid_api_key_123"
+
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.text = "{}"
+        mock_resp.json.return_value = {}
+        mock_post.return_value = mock_resp
+
+        res = send_confirmation_email(
+            to_email="sivaramakrishnabevaraa@gmail.com",
+            participant_name="Sivaram",
+            team_id="AX2026-001",
+            team_name="Cyber Sentinels",
+            member1_name="Sivaram",
+            member2_name="Partner",
+            track_title="Agentic AI",
+            max_attempts=1,
+            retry_delay=0.01
+        )
+
+        self.assertFalse(res["success"])
+        self.assertIsNone(res["message_id"])
+        self.assertIn("Missing messageId", res["error"])
+
+    @patch("requests.post")
+    def test_brevo_4xx_permanent_error_no_retry(self, mock_post):
+        """Test that permanent 4xx sender/authentication errors do not retry unnecessarily."""
+        os.environ["BREVO_API_KEY"] = "xkeysib-invalid_key"
+
+        mock_resp = MagicMock()
+        mock_resp.status_code = 401
+        mock_resp.text = '{"code": "unauthorized", "message": "Key unrecognised"}'
+        mock_post.return_value = mock_resp
+
+        res = send_confirmation_email(
+            to_email="sivaramakrishnabevaraa@gmail.com",
+            participant_name="Sivaram",
+            team_id="AX2026-001",
+            team_name="Cyber Sentinels",
+            member1_name="Sivaram",
+            member2_name="Partner",
+            track_title="Agentic AI",
+            max_attempts=3,
+            retry_delay=0.01
+        )
+
+        self.assertFalse(res["success"])
+        self.assertEqual(res["attempts"], 1)
+        self.assertEqual(mock_post.call_count, 1)
+        self.assertIn("HTTP 401", res["error"])
+
+    @patch("requests.post")
+    def test_brevo_transient_error_retry_success(self, mock_post):
+        """Test Brevo HTTP 500/503 retry logic (fails twice, succeeds on 3rd attempt)."""
+        os.environ["BREVO_API_KEY"] = "xkeysib-valid_api_key_123"
 
         err_resp = MagicMock()
         err_resp.status_code = 503
@@ -125,7 +186,8 @@ class TestResendHTTPSAndEmailDelivery(unittest.TestCase):
 
         success_resp = MagicMock()
         success_resp.status_code = 200
-        success_resp.json.return_value = {"id": "resend_msg_retry_ok"}
+        success_resp.text = '{"messageId": "<msg_retry_ok>"}'
+        success_resp.json.return_value = {"messageId": "<msg_retry_ok>"}
 
         mock_post.side_effect = [err_resp, err_resp, success_resp]
 
@@ -143,24 +205,25 @@ class TestResendHTTPSAndEmailDelivery(unittest.TestCase):
 
         self.assertTrue(res["success"])
         self.assertEqual(res["attempts"], 3)
-        self.assertEqual(res["resend_id"], "resend_msg_retry_ok")
+        self.assertEqual(res["message_id"], "<msg_retry_ok>")
         self.assertEqual(mock_post.call_count, 3)
 
     @patch("requests.post")
-    def test_resend_independent_recipient_processing(self, mock_post):
+    def test_brevo_independent_recipient_processing(self, mock_post):
         """
-        Test independent delivery via Resend API:
+        Test independent delivery via Brevo API:
         Member 1 fails persistent 500 error, Member 2 succeeds on attempt 1.
         """
-        os.environ["RESEND_API_KEY"] = "re_valid_api_key_123"
+        os.environ["BREVO_API_KEY"] = "xkeysib-valid_api_key_123"
 
         err_resp = MagicMock()
         err_resp.status_code = 500
         err_resp.text = "Internal Server Error"
 
         success_resp = MagicMock()
-        success_resp.status_code = 200
-        success_resp.json.return_value = {"id": "resend_msg_m2_ok"}
+        success_resp.status_code = 201
+        success_resp.text = '{"messageId": "<msg_m2_ok>"}'
+        success_resp.json.return_value = {"messageId": "<msg_m2_ok>"}
 
         # Member 1 fails 3 times, Member 2 succeeds on 1st try
         mock_post.side_effect = [err_resp, err_resp, err_resp, success_resp]
@@ -193,11 +256,12 @@ class TestResendHTTPSAndEmailDelivery(unittest.TestCase):
     @patch("requests.post")
     def test_duplicate_email_prevention(self, mock_post):
         """Test duplicate email prevention within team email dispatch."""
-        os.environ["RESEND_API_KEY"] = "re_valid_api_key_123"
+        os.environ["BREVO_API_KEY"] = "xkeysib-valid_api_key_123"
 
         success_resp = MagicMock()
-        success_resp.status_code = 200
-        success_resp.json.return_value = {"id": "resend_single"}
+        success_resp.status_code = 201
+        success_resp.text = '{"messageId": "<msg_single>"}'
+        success_resp.json.return_value = {"messageId": "<msg_single>"}
         mock_post.return_value = success_resp
 
         results = send_team_confirmation_emails(
