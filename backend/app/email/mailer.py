@@ -2,6 +2,8 @@ import os
 import re
 import time
 import smtplib
+import requests
+from abc import ABC, abstractmethod
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 
@@ -15,73 +17,65 @@ def is_valid_email(email: str) -> bool:
         return False
     return bool(EMAIL_REGEX.match(email.strip()))
 
-def get_smtp_config():
+def get_email_config():
     """
-    Retrieves latest SMTP configuration from environment variables.
+    Retrieves email configuration from environment variables.
+    Supports RESEND_API_KEY, EMAIL_FROM (or SMTP_FROM_EMAIL), EMAIL_FROM_NAME (or SMTP_FROM_NAME).
     """
-    host = os.getenv("SMTP_HOST", "smtp.gmail.com").strip()
-    try:
-        port = int(os.getenv("SMTP_PORT", "587"))
-    except (ValueError, TypeError):
-        port = 587
-    username = os.getenv("SMTP_USERNAME", "").strip()
-    password = os.getenv("SMTP_PASSWORD", "").strip()
-    from_email = os.getenv("SMTP_FROM_EMAIL", "notifications@agentxindia.com").strip()
-    from_name = os.getenv("SMTP_FROM_NAME", "AGENTX INDIA 2026 Team").strip()
+    resend_api_key = os.getenv("RESEND_API_KEY", "").strip()
+    
+    from_email = os.getenv("EMAIL_FROM", "").strip() or os.getenv("SMTP_FROM_EMAIL", "notifications@agentxindia.com").strip()
+    from_name = os.getenv("EMAIL_FROM_NAME", "").strip() or os.getenv("SMTP_FROM_NAME", "AGENTX INDIA 2026 Team").strip()
     base_url = os.getenv("BASE_URL", "http://localhost:5173").strip()
-    return host, port, username, password, from_email, from_name, base_url
 
-def get_safe_error_message(err: Exception) -> str:
+    smtp_host = os.getenv("SMTP_HOST", "smtp.gmail.com").strip()
+    try:
+        smtp_port = int(os.getenv("SMTP_PORT", "587"))
+    except (ValueError, TypeError):
+        smtp_port = 587
+    smtp_username = os.getenv("SMTP_USERNAME", "").strip()
+    smtp_password = os.getenv("SMTP_PASSWORD", "").strip()
+
+    return {
+        "resend_api_key": resend_api_key,
+        "from_email": from_email,
+        "from_name": from_name,
+        "base_url": base_url,
+        "smtp_host": smtp_host,
+        "smtp_port": smtp_port,
+        "smtp_username": smtp_username,
+        "smtp_password": smtp_password,
+    }
+
+def get_safe_error_message(err: Exception | str) -> str:
     """
-    Returns sanitized error string ensuring SMTP_PASSWORD is never leaked.
+    Returns sanitized error string ensuring RESEND_API_KEY and SMTP_PASSWORD are never leaked.
     """
     msg = str(err)
-    password = os.getenv("SMTP_PASSWORD", "").strip()
-    if password and len(password) > 2 and password in msg:
-        msg = msg.replace(password, "******")
+    config = get_email_config()
+    resend_key = config["resend_api_key"]
+    smtp_pwd = config["smtp_password"]
+
+    if resend_key and len(resend_key) > 4 and resend_key in msg:
+        msg = msg.replace(resend_key, "re_******")
+    if smtp_pwd and len(smtp_pwd) > 2 and smtp_pwd in msg:
+        msg = msg.replace(smtp_pwd, "******")
     return msg
 
-def send_confirmation_email(
-    to_email: str,
+def generate_confirmation_html(
     participant_name: str,
     team_id: str,
     team_name: str,
     member1_name: str,
     member2_name: str,
     track_title: str,
-    max_attempts: int = 3,
-    retry_delay: float = 1.0
-) -> dict:
+    base_url: str,
+    from_email: str
+) -> str:
     """
-    Sends registration confirmation email to a single participant with retry logic.
-    Handles network errors gracefully, retries up to max_attempts, and never logs credentials.
-    Returns status dictionary with delivery details.
+    Generates standardized HTML body for confirmation emails.
     """
-    to_email = (to_email or "").strip()
-
-    if not is_valid_email(to_email):
-        print(f"[Email Error] Attempt 1/{max_attempts} to {to_email}: Invalid email address format")
-        return {
-            "to_email": to_email,
-            "success": False,
-            "attempts": 0,
-            "error": "Invalid email address format"
-        }
-
-    host, port, username, password, from_email, from_name, base_url = get_smtp_config()
-
-    if not username or not password or password == "your_smtp_app_password":
-        print(f"[Email Notification Simulation] Attempt 1/1 to {to_email} | Team ID: {team_id} | Team: {team_name}")
-        return {
-            "to_email": to_email,
-            "success": True,
-            "attempts": 1,
-            "error": None
-        }
-
-    subject = f"AGENTX INDIA 2026 — Registration Confirmed ({team_id})"
-    
-    html_body = f"""
+    return f"""
     <!DOCTYPE html>
     <html>
     <head>
@@ -137,40 +131,287 @@ def send_confirmation_email(
     </html>
     """
 
-    msg = MIMEMultipart("alternative")
-    msg["Subject"] = subject
-    msg["From"] = f"{from_name} <{from_email}>"
-    msg["To"] = to_email
-    msg.attach(MIMEText(html_body, "html"))
+class BaseEmailProvider(ABC):
+    @abstractmethod
+    def send_confirmation_email(
+        self,
+        to_email: str,
+        participant_name: str,
+        team_id: str,
+        team_name: str,
+        member1_name: str,
+        member2_name: str,
+        track_title: str,
+        max_attempts: int = 3,
+        retry_delay: float = 1.0
+    ) -> dict:
+        pass
 
-    last_error = None
-    for attempt in range(1, max_attempts + 1):
-        try:
-            server = smtplib.SMTP(host, port, timeout=15)
-            server.starttls()
-            server.login(username, password)
-            server.sendmail(from_email, [to_email], msg.as_string())
-            server.quit()
-            print(f"[Email Sent] Attempt {attempt}/{max_attempts} to {to_email}: Successfully sent confirmation email")
-            return {
-                "to_email": to_email,
-                "success": True,
-                "attempts": attempt,
-                "error": None
-            }
-        except Exception as e:
-            safe_err = get_safe_error_message(e)
-            last_error = safe_err
-            print(f"[Email Error] Attempt {attempt}/{max_attempts} to {to_email}: {safe_err}")
-            if attempt < max_attempts and retry_delay > 0:
-                time.sleep(retry_delay)
+class ResendEmailProvider(BaseEmailProvider):
+    """
+    Production Email Provider using Resend HTTP API (https://api.resend.com/emails).
+    Uses standard HTTPS outbound connection on port 443.
+    """
 
-    return {
-        "to_email": to_email,
-        "success": False,
-        "attempts": max_attempts,
-        "error": last_error or "Maximum retry attempts exceeded"
-    }
+    def __init__(self, api_key: str):
+        self.api_key = api_key
+
+    def send_confirmation_email(
+        self,
+        to_email: str,
+        participant_name: str,
+        team_id: str,
+        team_name: str,
+        member1_name: str,
+        member2_name: str,
+        track_title: str,
+        max_attempts: int = 3,
+        retry_delay: float = 1.0
+    ) -> dict:
+        config = get_email_config()
+        from_email = config["from_email"]
+        from_name = config["from_name"]
+        base_url = config["base_url"]
+
+        subject = f"AGENTX INDIA 2026 — Registration Confirmed ({team_id})"
+        html_body = generate_confirmation_html(
+            participant_name=participant_name,
+            team_id=team_id,
+            team_name=team_name,
+            member1_name=member1_name,
+            member2_name=member2_name,
+            track_title=track_title,
+            base_url=base_url,
+            from_email=from_email
+        )
+
+        headers = {
+            "Authorization": f"Bearer {self.api_key}",
+            "Content-Type": "application/json"
+        }
+
+        from_header = f"{from_name} <{from_email}>" if from_name else from_email
+
+        payload = {
+            "from": from_header,
+            "to": [to_email],
+            "subject": subject,
+            "html": html_body
+        }
+
+        url = "https://api.resend.com/emails"
+        last_error = None
+        last_status = None
+
+        for attempt in range(1, max_attempts + 1):
+            try:
+                resp = requests.post(url, json=payload, headers=headers, timeout=15)
+                last_status = resp.status_code
+
+                if 200 <= resp.status_code < 300:
+                    data = resp.json() if resp.text else {}
+                    resend_id = data.get("id", "N/A")
+                    print(f"[Email Sent] Attempt {attempt}/{max_attempts} to {to_email} via Resend HTTPS API: Status {resp.status_code} | Resend ID: {resend_id}")
+                    return {
+                        "to_email": to_email,
+                        "success": True,
+                        "attempts": attempt,
+                        "http_status": resp.status_code,
+                        "resend_id": resend_id,
+                        "provider": "resend",
+                        "error": None
+                    }
+                else:
+                    err_msg = get_safe_error_message(resp.text)
+                    last_error = f"Resend API Error (HTTP {resp.status_code}): {err_msg}"
+                    print(f"[Email Error] Attempt {attempt}/{max_attempts} to {to_email} via Resend: {last_error}")
+
+                    if 400 <= resp.status_code < 500 and resp.status_code != 429:
+                        return {
+                            "to_email": to_email,
+                            "success": False,
+                            "attempts": attempt,
+                            "http_status": resp.status_code,
+                            "provider": "resend",
+                            "error": last_error
+                        }
+
+                    if attempt < max_attempts and retry_delay > 0:
+                        time.sleep(retry_delay)
+
+            except Exception as e:
+                safe_err = get_safe_error_message(e)
+                last_error = f"Resend HTTP Request Exception: {safe_err}"
+                print(f"[Email Error] Attempt {attempt}/{max_attempts} to {to_email} via Resend: {last_error}")
+                if attempt < max_attempts and retry_delay > 0:
+                    time.sleep(retry_delay)
+
+        return {
+            "to_email": to_email,
+            "success": False,
+            "attempts": max_attempts,
+            "http_status": last_status,
+            "provider": "resend",
+            "error": last_error or "Maximum retry attempts exceeded"
+        }
+
+class SMTPEmailProvider(BaseEmailProvider):
+    """
+    Optional Local Development Fallback Provider using Gmail SMTP.
+    """
+
+    def send_confirmation_email(
+        self,
+        to_email: str,
+        participant_name: str,
+        team_id: str,
+        team_name: str,
+        member1_name: str,
+        member2_name: str,
+        track_title: str,
+        max_attempts: int = 3,
+        retry_delay: float = 1.0
+    ) -> dict:
+        config = get_email_config()
+        host = config["smtp_host"]
+        port = config["smtp_port"]
+        username = config["smtp_username"]
+        password = config["smtp_password"]
+        from_email = config["from_email"]
+        from_name = config["from_name"]
+        base_url = config["base_url"]
+
+        subject = f"AGENTX INDIA 2026 — Registration Confirmed ({team_id})"
+        html_body = generate_confirmation_html(
+            participant_name=participant_name,
+            team_id=team_id,
+            team_name=team_name,
+            member1_name=member1_name,
+            member2_name=member2_name,
+            track_title=track_title,
+            base_url=base_url,
+            from_email=from_email
+        )
+
+        msg = MIMEMultipart("alternative")
+        msg["Subject"] = subject
+        msg["From"] = f"{from_name} <{from_email}>"
+        msg["To"] = to_email
+        msg.attach(MIMEText(html_body, "html"))
+
+        last_error = None
+        for attempt in range(1, max_attempts + 1):
+            try:
+                server = smtplib.SMTP(host, port, timeout=15)
+                server.starttls()
+                server.login(username, password)
+                server.sendmail(from_email, [to_email], msg.as_string())
+                server.quit()
+                print(f"[Email Sent] Attempt {attempt}/{max_attempts} to {to_email} via SMTP: Successfully sent confirmation email")
+                return {
+                    "to_email": to_email,
+                    "success": True,
+                    "attempts": attempt,
+                    "provider": "smtp",
+                    "error": None
+                }
+            except Exception as e:
+                safe_err = get_safe_error_message(e)
+                last_error = safe_err
+                print(f"[Email Error] Attempt {attempt}/{max_attempts} to {to_email} via SMTP: {safe_err}")
+                if attempt < max_attempts and retry_delay > 0:
+                    time.sleep(retry_delay)
+
+        return {
+            "to_email": to_email,
+            "success": False,
+            "attempts": max_attempts,
+            "provider": "smtp",
+            "error": last_error or "Maximum retry attempts exceeded"
+        }
+
+class SimulationEmailProvider(BaseEmailProvider):
+    """
+    Simulation Fallback Provider when no email service keys/passwords are provided.
+    """
+
+    def send_confirmation_email(
+        self,
+        to_email: str,
+        participant_name: str,
+        team_id: str,
+        team_name: str,
+        member1_name: str,
+        member2_name: str,
+        track_title: str,
+        max_attempts: int = 3,
+        retry_delay: float = 1.0
+    ) -> dict:
+        print(f"[Email Notification Simulation] Attempt 1/1 to {to_email} | Team ID: {team_id} | Team: {team_name}")
+        return {
+            "to_email": to_email,
+            "success": True,
+            "attempts": 1,
+            "provider": "simulation",
+            "error": None
+        }
+
+def get_email_provider() -> BaseEmailProvider:
+    """
+    Factory function selecting current active Email Provider based on environment configuration.
+    """
+    config = get_email_config()
+    resend_key = config["resend_api_key"]
+    smtp_user = config["smtp_username"]
+    smtp_pwd = config["smtp_password"]
+
+    if resend_key:
+        return ResendEmailProvider(api_key=resend_key)
+    elif smtp_user and smtp_pwd and smtp_pwd != "your_smtp_app_password":
+        return SMTPEmailProvider()
+    else:
+        return SimulationEmailProvider()
+
+def send_confirmation_email(
+    to_email: str,
+    participant_name: str,
+    team_id: str,
+    team_name: str,
+    member1_name: str,
+    member2_name: str,
+    track_title: str,
+    max_attempts: int = 3,
+    retry_delay: float = 1.0,
+    provider: BaseEmailProvider = None
+) -> dict:
+    """
+    Sends registration confirmation email to a single participant using the active email provider.
+    """
+    to_email = (to_email or "").strip()
+
+    if not is_valid_email(to_email):
+        print(f"[Email Error] Attempt 1/{max_attempts} to {to_email}: Invalid email address format")
+        return {
+            "to_email": to_email,
+            "success": False,
+            "attempts": 0,
+            "error": "Invalid email address format"
+        }
+
+    if provider is None:
+        provider = get_email_provider()
+
+    return provider.send_confirmation_email(
+        to_email=to_email,
+        participant_name=participant_name,
+        team_id=team_id,
+        team_name=team_name,
+        member1_name=member1_name,
+        member2_name=member2_name,
+        track_title=track_title,
+        max_attempts=max_attempts,
+        retry_delay=retry_delay
+    )
 
 def send_team_confirmation_emails(
     registration_id: int,
@@ -182,7 +423,8 @@ def send_team_confirmation_emails(
     member2_name: str = None,
     member2_email: str = None,
     max_attempts: int = 3,
-    retry_delay: float = 1.0
+    retry_delay: float = 1.0,
+    provider: BaseEmailProvider = None
 ) -> dict:
     """
     Sends confirmation emails to BOTH team members independently.
@@ -202,6 +444,9 @@ def send_team_confirmation_emails(
     m1_display = member1_name or ""
     m2_display = member2_name or ""
 
+    if provider is None:
+        provider = get_email_provider()
+
     for name, email in recipients:
         norm_email = email.lower()
         if norm_email in processed_emails:
@@ -219,7 +464,8 @@ def send_team_confirmation_emails(
                 member2_name=m2_display,
                 track_title=track_title,
                 max_attempts=max_attempts,
-                retry_delay=retry_delay
+                retry_delay=retry_delay,
+                provider=provider
             )
             delivery_results[email] = res
         except Exception as e:
@@ -233,4 +479,5 @@ def send_team_confirmation_emails(
             }
 
     return delivery_results
+
 

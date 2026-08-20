@@ -3,31 +3,30 @@ import sys
 import unittest
 from unittest.mock import patch, MagicMock
 
-# Ensure backend directory is in python path
 sys.path.insert(0, os.path.abspath(os.path.dirname(__file__)))
 
 from app.email.mailer import (
     is_valid_email,
     get_safe_error_message,
     send_confirmation_email,
-    send_team_confirmation_emails
+    send_team_confirmation_emails,
+    get_email_provider,
+    ResendEmailProvider,
+    SMTPEmailProvider,
+    SimulationEmailProvider
 )
 
-class TestEmailDeliverySystem(unittest.TestCase):
+class TestResendHTTPSAndEmailDelivery(unittest.TestCase):
 
     def setUp(self):
-        # Set dummy env vars for test environment
-        os.environ["SMTP_HOST"] = "smtp.gmail.com"
-        os.environ["SMTP_PORT"] = "587"
-        os.environ["SMTP_USERNAME"] = "test_user@gmail.com"
-        os.environ["SMTP_PASSWORD"] = "secret_smtp_password_123"
-        os.environ["SMTP_FROM_EMAIL"] = "notifications@agentxindia.com"
+        self.original_env = dict(os.environ)
 
     def tearDown(self):
-        pass
+        os.environ.clear()
+        os.environ.update(self.original_env)
 
     def test_email_validation(self):
-        """Test recipient email address validation rules."""
+        """Test recipient email address syntax validation."""
         self.assertTrue(is_valid_email("sivaram54599@gmail.com"))
         self.assertTrue(is_valid_email("sivaramakrishnabevaraa@gmail.com"))
         self.assertFalse(is_valid_email("invalid-email-string"))
@@ -36,7 +35,6 @@ class TestEmailDeliverySystem(unittest.TestCase):
         self.assertFalse(is_valid_email(""))
         self.assertFalse(is_valid_email(None))
 
-        # Check sending to invalid email directly
         res = send_confirmation_email(
             to_email="invalid-email-format",
             participant_name="Test User",
@@ -50,20 +48,50 @@ class TestEmailDeliverySystem(unittest.TestCase):
         self.assertEqual(res["attempts"], 0)
         self.assertEqual(res["error"], "Invalid email address format")
 
-    def test_safe_error_message_masks_password(self):
-        """Verify that SMTP_PASSWORD is never leaked in error logs or messages."""
-        secret_pwd = os.environ["SMTP_PASSWORD"]
-        exception_with_password = Exception(f"Failed login with user test_user@gmail.com and password {secret_pwd}")
-        safe_msg = get_safe_error_message(exception_with_password)
-        
-        self.assertNotIn(secret_pwd, safe_msg)
+    def test_provider_factory_selection(self):
+        """Test active provider selection based on environment variables."""
+        # 1. Resend Provider selected when RESEND_API_KEY is present
+        os.environ["RESEND_API_KEY"] = "re_test_key_12345"
+        provider = get_email_provider()
+        self.assertIsInstance(provider, ResendEmailProvider)
+
+        # 2. SMTP Provider selected when RESEND_API_KEY is absent but SMTP credentials present
+        del os.environ["RESEND_API_KEY"]
+        os.environ["SMTP_USERNAME"] = "user@test.com"
+        os.environ["SMTP_PASSWORD"] = "smtp_pass_123"
+        provider = get_email_provider()
+        self.assertIsInstance(provider, SMTPEmailProvider)
+
+        # 3. Simulation Provider selected when no credentials set
+        del os.environ["SMTP_USERNAME"]
+        del os.environ["SMTP_PASSWORD"]
+        provider = get_email_provider()
+        self.assertIsInstance(provider, SimulationEmailProvider)
+
+    def test_safe_error_message_masks_keys_and_passwords(self):
+        """Verify that RESEND_API_KEY and SMTP_PASSWORD are never leaked in error messages."""
+        os.environ["RESEND_API_KEY"] = "re_secret_resend_api_key_8899"
+        os.environ["SMTP_PASSWORD"] = "secret_smtp_pass_9988"
+
+        err = Exception("Failed call with key re_secret_resend_api_key_8899 and pass secret_smtp_pass_9988")
+        safe_msg = get_safe_error_message(err)
+
+        self.assertNotIn("re_secret_resend_api_key_8899", safe_msg)
+        self.assertNotIn("secret_smtp_pass_9988", safe_msg)
+        self.assertIn("re_******", safe_msg)
         self.assertIn("******", safe_msg)
 
-    @patch("smtplib.SMTP")
-    def test_successful_email_send(self, mock_smtp_cls):
-        """Test successful email send on first attempt."""
-        mock_server = MagicMock()
-        mock_smtp_cls.return_value = mock_server
+    @patch("requests.post")
+    def test_resend_successful_email_send(self, mock_post):
+        """Test successful HTTPS email dispatch via Resend API."""
+        os.environ["RESEND_API_KEY"] = "re_valid_api_key_123"
+        os.environ["EMAIL_FROM"] = "notifications@agentxindia.com"
+        os.environ["EMAIL_FROM_NAME"] = "AGENTX INDIA 2026 Team"
+
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.json.return_value = {"id": "resend_msg_id_990011"}
+        mock_post.return_value = mock_resp
 
         res = send_confirmation_email(
             to_email="sivaramakrishnabevaraa@gmail.com",
@@ -77,20 +105,29 @@ class TestEmailDeliverySystem(unittest.TestCase):
 
         self.assertTrue(res["success"])
         self.assertEqual(res["attempts"], 1)
-        self.assertIsNone(res["error"])
-        mock_server.starttls.assert_called_once()
-        mock_server.login.assert_called_once_with("test_user@gmail.com", "secret_smtp_password_123")
-        mock_server.sendmail.assert_called_once()
-        mock_server.quit.assert_called_once()
+        self.assertEqual(res["http_status"], 200)
+        self.assertEqual(res["resend_id"], "resend_msg_id_990011")
 
-    @patch("smtplib.SMTP")
-    def test_transient_network_error_retry_success(self, mock_smtp_cls):
-        """Test retry logic: Attempt 1 & 2 fail with [Errno 101] Network is unreachable, Attempt 3 succeeds."""
-        mock_server = MagicMock()
-        network_err = OSError(101, "Network is unreachable")
-        
-        # Side effect: fail twice, succeed on 3rd attempt
-        mock_smtp_cls.side_effect = [network_err, network_err, mock_server]
+        mock_post.assert_called_once()
+        call_kwargs = mock_post.call_args[1]
+        self.assertEqual(call_kwargs["headers"]["Authorization"], "Bearer re_valid_api_key_123")
+        self.assertEqual(call_kwargs["json"]["to"], ["sivaramakrishnabevaraa@gmail.com"])
+        self.assertEqual(call_kwargs["json"]["from"], "AGENTX INDIA 2026 Team <notifications@agentxindia.com>")
+
+    @patch("requests.post")
+    def test_resend_transient_error_retry_success(self, mock_post):
+        """Test Resend HTTP 500/503 retry logic (fails twice, succeeds on 3rd attempt)."""
+        os.environ["RESEND_API_KEY"] = "re_valid_api_key_123"
+
+        err_resp = MagicMock()
+        err_resp.status_code = 503
+        err_resp.text = "Service Unavailable"
+
+        success_resp = MagicMock()
+        success_resp.status_code = 200
+        success_resp.json.return_value = {"id": "resend_msg_retry_ok"}
+
+        mock_post.side_effect = [err_resp, err_resp, success_resp]
 
         res = send_confirmation_email(
             to_email="sivaramakrishnabevaraa@gmail.com",
@@ -106,42 +143,27 @@ class TestEmailDeliverySystem(unittest.TestCase):
 
         self.assertTrue(res["success"])
         self.assertEqual(res["attempts"], 3)
-        self.assertIsNone(res["error"])
+        self.assertEqual(res["resend_id"], "resend_msg_retry_ok")
+        self.assertEqual(mock_post.call_count, 3)
 
-    @patch("smtplib.SMTP")
-    def test_transient_network_error_max_retries_failed(self, mock_smtp_cls):
-        """Test max retries (3) reached on persistent network failure."""
-        network_err = OSError(101, "Network is unreachable")
-        mock_smtp_cls.side_effect = network_err
-
-        res = send_confirmation_email(
-            to_email="sivaram54599@gmail.com",
-            participant_name="Sivaram",
-            team_id="AX2026-001",
-            team_name="Cyber Sentinels",
-            member1_name="Sivaram",
-            member2_name="Partner",
-            track_title="Agentic AI",
-            max_attempts=3,
-            retry_delay=0.01
-        )
-
-        self.assertFalse(res["success"])
-        self.assertEqual(res["attempts"], 3)
-        self.assertIn("Network is unreachable", res["error"])
-
-    @patch("smtplib.SMTP")
-    def test_independent_recipient_processing(self, mock_smtp_cls):
+    @patch("requests.post")
+    def test_resend_independent_recipient_processing(self, mock_post):
         """
-        Test that email 1 failure does NOT block email 2 attempt.
-        Member 1 (sivaram54599@gmail.com) fails 3 times due to network error.
-        Member 2 (sivaramakrishnabevaraa@gmail.com) succeeds on attempt 1.
+        Test independent delivery via Resend API:
+        Member 1 fails persistent 500 error, Member 2 succeeds on attempt 1.
         """
-        mock_server = MagicMock()
-        network_err = OSError(101, "Network is unreachable")
+        os.environ["RESEND_API_KEY"] = "re_valid_api_key_123"
 
-        # Calls: 3 fails for Member 1, 1 success for Member 2
-        mock_smtp_cls.side_effect = [network_err, network_err, network_err, mock_server]
+        err_resp = MagicMock()
+        err_resp.status_code = 500
+        err_resp.text = "Internal Server Error"
+
+        success_resp = MagicMock()
+        success_resp.status_code = 200
+        success_resp.json.return_value = {"id": "resend_msg_m2_ok"}
+
+        # Member 1 fails 3 times, Member 2 succeeds on 1st try
+        mock_post.side_effect = [err_resp, err_resp, err_resp, success_resp]
 
         results = send_team_confirmation_emails(
             registration_id=1,
@@ -168,11 +190,15 @@ class TestEmailDeliverySystem(unittest.TestCase):
         self.assertTrue(m2_res["success"])
         self.assertEqual(m2_res["attempts"], 1)
 
-    @patch("smtplib.SMTP")
-    def test_duplicate_email_prevention(self, mock_smtp_cls):
-        """Test duplicate recipient email prevention within same team confirmation."""
-        mock_server = MagicMock()
-        mock_smtp_cls.return_value = mock_server
+    @patch("requests.post")
+    def test_duplicate_email_prevention(self, mock_post):
+        """Test duplicate email prevention within team email dispatch."""
+        os.environ["RESEND_API_KEY"] = "re_valid_api_key_123"
+
+        success_resp = MagicMock()
+        success_resp.status_code = 200
+        success_resp.json.return_value = {"id": "resend_single"}
+        mock_post.return_value = success_resp
 
         results = send_team_confirmation_emails(
             registration_id=1,
@@ -182,33 +208,15 @@ class TestEmailDeliverySystem(unittest.TestCase):
             member1_name="Sivaram",
             member1_email="sivaram54599@gmail.com",
             member2_name="Sivaram Copy",
-            member2_email="sivaram54599@gmail.com", # Duplicate email
+            member2_email="sivaram54599@gmail.com",
             max_attempts=3,
             retry_delay=0.01
         )
 
-        # Only one email dispatch should occur
         self.assertEqual(len(results), 1)
         self.assertIn("sivaram54599@gmail.com", results)
         self.assertTrue(results["sivaram54599@gmail.com"]["success"])
-
-    def test_simulation_mode(self):
-        """Test simulation fallback mode when credentials are missing or default."""
-        os.environ["SMTP_PASSWORD"] = "your_smtp_app_password"
-
-        res = send_confirmation_email(
-            to_email="sivaramakrishnabevaraa@gmail.com",
-            participant_name="Sivaram",
-            team_id="AX2026-001",
-            team_name="Cyber Sentinels",
-            member1_name="Sivaram",
-            member2_name="Partner",
-            track_title="Agentic AI"
-        )
-
-        self.assertTrue(res["success"])
-        self.assertEqual(res["attempts"], 1)
-        self.assertIsNone(res["error"])
+        self.assertEqual(mock_post.call_count, 1)
 
 if __name__ == "__main__":
     unittest.main()
