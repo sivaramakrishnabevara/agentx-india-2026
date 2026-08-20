@@ -12,7 +12,7 @@ from app.models.models import Admin, EventSettings, Track, Registration, Partici
 from app.schemas.schemas import AdminLogin, Token, EventSettingsUpdate, TrackCreate, AdminDashboardMetrics, AdminVerifyPaymentRequest, AdminRejectPaymentRequest
 from app.auth.security import verify_password, create_access_token, get_current_admin, get_password_hash
 from app.routes.payments import generate_next_team_id
-from app.email.mailer import send_confirmation_email
+from app.email.mailer import send_confirmation_email, send_team_confirmation_emails, get_safe_error_message
 from app.payments.upi_handler import UPLOAD_DIR, save_payment_screenshot
 
 router = APIRouter(prefix="/api/admin", tags=["Admin Management"])
@@ -25,6 +25,7 @@ def log_admin_action(db: Session, admin_username: str, action: str, details: str
     )
     db.add(log)
     db.commit()
+
 
 @router.post("/login", response_model=Token)
 def admin_login(data: AdminLogin, db: Session = Depends(get_db)):
@@ -295,53 +296,58 @@ def verify_payment_admin(
     registration.payment_status = "VERIFIED"
     db.commit()
 
-    # 3. Create Audit Log
-    log_admin_action(
-        db,
-        current_admin.username,
-        "VERIFY_PAYMENT",
-        f"Verified UPI payment of ₹{payment.amount} for Team {registration.team_name} (UTR: {payment.utr}). Assigned Team ID: {registration.team_id}"
-    )
-
-    # 4. Trigger Confirmation Emails
+    # 3. Trigger Confirmation Emails for both team members independently
     track_title = registration.track.title if registration.track else "General Agentic AI"
     m1 = registration.member1
     m2 = registration.member2
 
-    if m1 and m1.email:
-        try:
-            send_confirmation_email(
-                to_email=m1.email,
-                participant_name=m1.full_name,
-                team_id=registration.team_id,
-                team_name=registration.team_name,
-                member1_name=m1.full_name,
-                member2_name=m2.full_name if m2 else "",
-                track_title=track_title
-            )
-        except Exception as e:
-            print(f"[Email Error Member 1]: {e}")
+    m1_name = m1.full_name if m1 else ""
+    m1_email = m1.email if m1 else ""
+    m2_name = m2.full_name if m2 else ""
+    m2_email = m2.email if m2 else ""
 
-    if m2 and m2.email:
-        try:
-            send_confirmation_email(
-                to_email=m2.email,
-                participant_name=m2.full_name,
-                team_id=registration.team_id,
-                team_name=registration.team_name,
-                member1_name=m1.full_name,
-                member2_name=m2.full_name,
-                track_title=track_title
-            )
-        except Exception as e:
-            print(f"[Email Error Member 2]: {e}")
+    email_delivery_results = {}
+    try:
+        email_delivery_results = send_team_confirmation_emails(
+            registration_id=registration.id,
+            team_id=registration.team_id,
+            team_name=registration.team_name,
+            track_title=track_title,
+            member1_name=m1_name,
+            member1_email=m1_email,
+            member2_name=m2_name,
+            member2_email=m2_email
+        )
+    except Exception as e:
+        safe_err = get_safe_error_message(e)
+        print(f"[Email Delivery Unexpected Error]: {safe_err}")
+
+    # Format email delivery summary for audit log
+    email_summary = []
+    for email_addr, status_info in email_delivery_results.items():
+        sent_str = "SUCCESS" if status_info.get("success") else "FAILED"
+        attempts = status_info.get("attempts", 0)
+        err = status_info.get("error")
+        err_str = f" ({err})" if err else ""
+        email_summary.append(f"{email_addr}: {sent_str} [Attempts: {attempts}]{err_str}")
+
+    email_log_str = "; ".join(email_summary) if email_summary else "No emails sent"
+
+    # 4. Create Audit Log
+    log_admin_action(
+        db,
+        current_admin.username,
+        "VERIFY_PAYMENT",
+        f"Verified UPI payment of ₹{payment.amount} for Team {registration.team_name} (UTR: {payment.utr}). Assigned Team ID: {registration.team_id}. Email Delivery: {email_log_str}"
+    )
 
     return {
         "success": True,
         "message": "Payment verified and registration confirmed successfully.",
         "team_id": registration.team_id,
         "payment_id": payment.id,
-        "status": "VERIFIED"
+        "status": "VERIFIED",
+        "email_delivery": email_delivery_results
     }
 
 @router.post("/payments/{payment_id}/reject")
