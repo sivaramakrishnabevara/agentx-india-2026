@@ -7,7 +7,7 @@ import {
   Users, CreditCard, Award, DollarSign, Download, Filter, Search, 
   RefreshCw, LogOut, CheckCircle2, XCircle, AlertTriangle, Settings, 
   FileSpreadsheet, Shield, FileText, ChevronRight, Eye, Edit, Trash2,
-  Clock, Check, X, Image, Upload
+  Clock, Check, X, Image, Upload, Copy, Mail
 } from 'lucide-react';
 
 export default function AdminDashboard() {
@@ -40,6 +40,10 @@ export default function AdminDashboard() {
   const [rejectingPayment, setRejectingPayment] = useState(null);
   const [rejectionReason, setRejectionReason] = useState('');
   const [screenshotModal, setScreenshotModal] = useState(null);
+
+  // View Details Modal State
+  const [viewDetailsData, setViewDetailsData] = useState(null);
+  const [copyStatus, setCopyStatus] = useState('');
 
   // Certificates State
   const [certificates, setCertificates] = useState([]);
@@ -128,7 +132,7 @@ export default function AdminDashboard() {
   };
 
   const handleVerifyPayment = async (paymentId, teamName, utr) => {
-    if (!window.confirm(`Verify payment of ₹199 for team "${teamName}" (UTR: ${utr})?\nThis will set status to CONFIRMED, assign permanent Team ID (AX001..AX100), and dispatch confirmation emails.`)) {
+    if (!window.confirm(`Verify payment of ₹199 for team "${teamName}" (UTR: ${utr})?\nThis will set status to CONFIRMED and assign permanent Team ID (AX001..AX100).`)) {
       return;
     }
 
@@ -176,6 +180,23 @@ export default function AdminDashboard() {
     } catch (err) {
       alert('Failed to view screenshot: ' + err.message);
     }
+  };
+
+  const handleOpenViewDetails = async (registrationId) => {
+    try {
+      const data = await api.getTeamDetails(registrationId);
+      setViewDetailsData(data);
+      setCopyStatus('');
+    } catch (err) {
+      alert('Failed to fetch team details: ' + err.message);
+    }
+  };
+
+  const handleCopyEmail = (text, label) => {
+    if (!text) return;
+    navigator.clipboard.writeText(text);
+    setCopyStatus(label);
+    setTimeout(() => setCopyStatus(''), 2500);
   };
 
   const handleUpdateStatus = async (registrationId, newStatus) => {
@@ -404,26 +425,33 @@ export default function AdminDashboard() {
                           )}
                         </td>
                         <td style={{ padding: '12px', textAlign: 'right' }}>
-                          {p.status === 'PENDING' ? (
-                            <div style={{ display: 'flex', gap: '6px', justifyContent: 'flex-end' }}>
-                              <button 
-                                onClick={() => handleVerifyPayment(p.id, p.team_name, p.utr)}
-                                className="btn-primary" 
-                                style={{ padding: '6px 12px', fontSize: '0.75rem', background: '#10b981', borderColor: '#10b981' }}
-                              >
-                                <Check size={14} /> VERIFY
-                              </button>
-                              <button 
-                                onClick={() => handleOpenRejectModal(p)}
-                                className="btn-secondary" 
-                                style={{ padding: '6px 12px', fontSize: '0.75rem', color: '#f87171', borderColor: 'rgba(239,68,68,0.4)' }}
-                              >
-                                <X size={14} /> REJECT
-                              </button>
-                            </div>
-                          ) : (
-                            <span style={{ fontSize: '0.75rem', color: '#64748b' }}>Processed</span>
-                          )}
+                          <div style={{ display: 'flex', gap: '6px', justifyContent: 'flex-end', flexWrap: 'wrap' }}>
+                            <button 
+                              onClick={() => handleOpenViewDetails(p.registration_id)}
+                              className="btn-secondary" 
+                              style={{ padding: '6px 12px', fontSize: '0.75rem', gap: '4px' }}
+                            >
+                              <Eye size={14} /> Details
+                            </button>
+                            {p.status === 'PENDING' ? (
+                              <>
+                                <button 
+                                  onClick={() => handleVerifyPayment(p.id, p.team_name, p.utr)}
+                                  className="btn-primary" 
+                                  style={{ padding: '6px 12px', fontSize: '0.75rem', background: '#10b981', borderColor: '#10b981' }}
+                                >
+                                  <Check size={14} /> VERIFY
+                                </button>
+                                <button 
+                                  onClick={() => handleOpenRejectModal(p)}
+                                  className="btn-secondary" 
+                                  style={{ padding: '6px 12px', fontSize: '0.75rem', color: '#f87171', borderColor: 'rgba(239,68,68,0.4)' }}
+                                >
+                                  <X size={14} /> REJECT
+                                </button>
+                              </>
+                            ) : null}
+                          </div>
                         </td>
                       </tr>
                     ))}
@@ -488,16 +516,25 @@ export default function AdminDashboard() {
                         <span className="badge-tag" style={{ fontSize: '0.75rem' }}>{t.status}</span>
                       </td>
                       <td style={{ padding: '12px', textAlign: 'right' }}>
-                        <select 
-                          className="form-select" 
-                          style={{ padding: '4px 8px', fontSize: '0.75rem', width: 'auto' }}
-                          value={t.status}
-                          onChange={(e) => handleUpdateStatus(t.id, e.target.value)}
-                        >
-                          <option value="CONFIRMED">CONFIRMED</option>
-                          <option value="PAYMENT_VERIFICATION">VERIFICATION PENDING</option>
-                          <option value="PAYMENT_PENDING">PAYMENT PENDING</option>
-                        </select>
+                        <div style={{ display: 'flex', gap: '8px', justifyContent: 'flex-end', alignItems: 'center' }}>
+                          <button 
+                            onClick={() => handleOpenViewDetails(t.id)}
+                            className="btn-secondary" 
+                            style={{ padding: '4px 10px', fontSize: '0.75rem', gap: '4px' }}
+                          >
+                            <Eye size={14} /> View Details
+                          </button>
+                          <select 
+                            className="form-select" 
+                            style={{ padding: '4px 8px', fontSize: '0.75rem', width: 'auto' }}
+                            value={t.status}
+                            onChange={(e) => handleUpdateStatus(t.id, e.target.value)}
+                          >
+                            <option value="CONFIRMED">CONFIRMED</option>
+                            <option value="PAYMENT_VERIFICATION">VERIFICATION PENDING</option>
+                            <option value="PAYMENT_PENDING">PAYMENT PENDING</option>
+                          </select>
+                        </div>
                       </td>
                     </tr>
                   ))}
@@ -742,6 +779,197 @@ export default function AdminDashboard() {
                 alt="Payment Screenshot" 
                 style={{ width: '100%', maxHeight: '70vh', objectFit: 'contain', borderRadius: '12px', border: '1px solid #1e293b' }} 
               />
+            </div>
+          </div>
+        )}
+
+        {/* MODAL: VIEW DETAILS */}
+        {viewDetailsData && (
+          <div style={{
+            position: 'fixed',
+            inset: 0,
+            background: 'rgba(0, 0, 0, 0.85)',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            zIndex: 1000,
+            padding: '20px'
+          }}>
+            <div className="glass-panel" style={{
+              width: '100%',
+              maxWidth: '800px',
+              maxHeight: '90vh',
+              overflowY: 'auto',
+              padding: '32px',
+              border: '1px solid rgba(6, 182, 212, 0.4)',
+              position: 'relative'
+            }}>
+              {/* Header */}
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: '24px', borderBottom: '1px solid #1e293b', paddingBottom: '16px' }}>
+                <div>
+                  <span className="badge-tag" style={{ background: 'rgba(6, 182, 212, 0.15)', color: '#38bdf8', borderColor: '#06b6d4', marginBottom: '6px' }}>
+                    Registration #{viewDetailsData.id} Details
+                  </span>
+                  <h2 style={{ fontSize: '1.6rem', fontWeight: 900, color: '#ffffff', margin: 0 }}>
+                    {viewDetailsData.team_name}
+                  </h2>
+                  <div style={{ fontSize: '0.85rem', color: '#94a3b8', marginTop: '4px' }}>
+                    Sequential Team ID: <strong style={{ color: '#38bdf8', fontFamily: 'monospace', fontSize: '0.95rem' }}>{viewDetailsData.team_id || 'N/A (Pending Verification)'}</strong>
+                  </div>
+                </div>
+                <button onClick={() => setViewDetailsData(null)} className="btn-secondary" style={{ padding: '6px 14px', fontSize: '0.85rem' }}>✕ Close</button>
+              </div>
+
+              {/* Copy Email Control Bar */}
+              <div style={{ background: 'rgba(15, 23, 42, 0.8)', border: '1px solid #1e293b', borderRadius: '12px', padding: '16px', marginBottom: '24px' }}>
+                <div style={{ fontSize: '0.8rem', textTransform: 'uppercase', color: '#94a3b8', fontWeight: 700, marginBottom: '10px', display: 'flex', alignItems: 'center', gap: '6px' }}>
+                  <Mail size={14} color="#06b6d4" /> Email Copy Controls (Clipboard Only — Manual Contact)
+                </div>
+                <div style={{ display: 'flex', gap: '10px', flexWrap: 'wrap' }}>
+                  <button
+                    type="button"
+                    onClick={() => handleCopyEmail(viewDetailsData.member1?.email, 'm1')}
+                    className="btn-secondary"
+                    style={{ padding: '8px 14px', fontSize: '0.8rem', gap: '6px', color: copyStatus === 'm1' ? '#34d399' : '#e2e8f0', borderColor: copyStatus === 'm1' ? '#10b981' : '#334155' }}
+                  >
+                    {copyStatus === 'm1' ? <Check size={14} /> : <Copy size={14} />} Copy Member 1 Email
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => handleCopyEmail(viewDetailsData.member2?.email, 'm2')}
+                    className="btn-secondary"
+                    style={{ padding: '8px 14px', fontSize: '0.8rem', gap: '6px', color: copyStatus === 'm2' ? '#34d399' : '#e2e8f0', borderColor: copyStatus === 'm2' ? '#10b981' : '#334155' }}
+                  >
+                    {copyStatus === 'm2' ? <Check size={14} /> : <Copy size={14} />} Copy Member 2 Email
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => handleCopyEmail(`${viewDetailsData.member1?.email || ''}, ${viewDetailsData.member2?.email || ''}`, 'both')}
+                    className="btn-primary"
+                    style={{ padding: '8px 14px', fontSize: '0.8rem', gap: '6px', background: copyStatus === 'both' ? '#10b981' : 'linear-gradient(135deg, #06b6d4, #3b82f6)' }}
+                  >
+                    {copyStatus === 'both' ? <Check size={14} /> : <Copy size={14} />} Copy Both Emails
+                  </button>
+                </div>
+                {copyStatus && (
+                  <div style={{ fontSize: '0.75rem', color: '#34d399', marginTop: '8px', fontWeight: 600 }}>
+                    ✓ Email address(es) copied to clipboard successfully!
+                  </div>
+                )}
+              </div>
+
+              {/* Information Columns */}
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(320px, 1fr))', gap: '20px', marginBottom: '24px' }}>
+                
+                {/* Team Information */}
+                <div style={{ background: 'rgba(30, 41, 59, 0.5)', border: '1px solid #1e293b', borderRadius: '12px', padding: '20px' }}>
+                  <h4 style={{ fontSize: '0.9rem', fontWeight: 800, color: '#38bdf8', marginBottom: '14px', textTransform: 'uppercase', letterSpacing: '0.5px' }}>
+                    TEAM INFORMATION
+                  </h4>
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '10px', fontSize: '0.85rem' }}>
+                    <div><span style={{ color: '#94a3b8' }}>Team Name:</span> <strong style={{ color: '#ffffff' }}>{viewDetailsData.team_name}</strong></div>
+                    <div><span style={{ color: '#94a3b8' }}>Team ID:</span> <strong style={{ color: '#38bdf8', fontFamily: 'monospace' }}>{viewDetailsData.team_id || 'N/A'}</strong></div>
+                    <div><span style={{ color: '#94a3b8' }}>Track ID:</span> <strong style={{ color: '#ffffff' }}>#{viewDetailsData.track_id} — {viewDetailsData.track_title}</strong></div>
+                    <div><span style={{ color: '#94a3b8' }}>College / Inst.:</span> <span style={{ color: '#e2e8f0' }}>{viewDetailsData.college}</span></div>
+                    <div><span style={{ color: '#94a3b8' }}>Location:</span> <span style={{ color: '#e2e8f0' }}>{viewDetailsData.city}, {viewDetailsData.state}</span></div>
+                    <div>
+                      <span style={{ color: '#94a3b8' }}>Registration Status:</span>{' '}
+                      <span className="badge-tag" style={{ fontSize: '0.75rem', padding: '2px 8px' }}>{viewDetailsData.status}</span>
+                    </div>
+                    <div>
+                      <span style={{ color: '#94a3b8' }}>Payment Status:</span>{' '}
+                      <span className="badge-tag" style={{
+                        fontSize: '0.75rem',
+                        padding: '2px 8px',
+                        background: viewDetailsData.payment_status === 'VERIFIED' ? 'rgba(16,185,129,0.15)' : 'rgba(245,158,11,0.15)',
+                        color: viewDetailsData.payment_status === 'VERIFIED' ? '#34d399' : '#fbbf24'
+                      }}>
+                        {viewDetailsData.payment_status}
+                      </span>
+                    </div>
+                    <div><span style={{ color: '#94a3b8' }}>Registration Date:</span> <span style={{ color: '#cbd5e1' }}>{viewDetailsData.created_at ? new Date(viewDetailsData.created_at).toLocaleString() : 'N/A'}</span></div>
+                  </div>
+                </div>
+
+                {/* Payment Information */}
+                <div style={{ background: 'rgba(30, 41, 59, 0.5)', border: '1px solid #1e293b', borderRadius: '12px', padding: '20px' }}>
+                  <h4 style={{ fontSize: '0.9rem', fontWeight: 800, color: '#f59e0b', marginBottom: '14px', textTransform: 'uppercase', letterSpacing: '0.5px' }}>
+                    PAYMENT INFORMATION
+                  </h4>
+                  {viewDetailsData.payment ? (
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: '10px', fontSize: '0.85rem' }}>
+                      <div><span style={{ color: '#94a3b8' }}>Payment ID:</span> <strong style={{ color: '#ffffff' }}>#{viewDetailsData.payment.id}</strong></div>
+                      <div><span style={{ color: '#94a3b8' }}>UTR / Trans ID:</span> <strong style={{ color: '#f59e0b', fontFamily: 'monospace', fontSize: '0.95rem' }}>{viewDetailsData.payment.utr}</strong></div>
+                      <div><span style={{ color: '#94a3b8' }}>Amount:</span> <strong style={{ color: '#10b981' }}>₹{viewDetailsData.payment.amount}</strong> ({viewDetailsData.payment.payment_method})</div>
+                      <div>
+                        <span style={{ color: '#94a3b8' }}>Payment Status:</span>{' '}
+                        <span className="badge-tag" style={{ fontSize: '0.75rem', padding: '2px 8px' }}>{viewDetailsData.payment.status}</span>
+                      </div>
+                      <div><span style={{ color: '#94a3b8' }}>Payment Submitted Date:</span> <span style={{ color: '#cbd5e1' }}>{viewDetailsData.payment.submitted_at ? new Date(viewDetailsData.payment.submitted_at).toLocaleString() : 'N/A'}</span></div>
+                      <div><span style={{ color: '#94a3b8' }}>Payment Verified Date:</span> <span style={{ color: '#cbd5e1' }}>{viewDetailsData.payment.verified_at ? new Date(viewDetailsData.payment.verified_at).toLocaleString() : 'Not Verified'}</span></div>
+                      {viewDetailsData.payment.verified_by && (
+                        <div><span style={{ color: '#94a3b8' }}>Verified By:</span> <span style={{ color: '#38bdf8' }}>{viewDetailsData.payment.verified_by}</span></div>
+                      )}
+                      {viewDetailsData.payment.has_screenshot && (
+                        <div style={{ marginTop: '4px' }}>
+                          <button onClick={() => handleViewScreenshot(viewDetailsData.payment.id)} className="btn-secondary" style={{ padding: '4px 10px', fontSize: '0.75rem', gap: '4px' }}>
+                            <Image size={12} /> View Screenshot
+                          </button>
+                        </div>
+                      )}
+                    </div>
+                  ) : (
+                    <div style={{ color: '#64748b', fontSize: '0.85rem' }}>No payment submission record found.</div>
+                  )}
+                </div>
+
+              </div>
+
+              {/* Members Information */}
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(320px, 1fr))', gap: '20px' }}>
+                
+                {/* Member 1 */}
+                <div style={{ background: 'rgba(30, 41, 59, 0.5)', border: '1px solid #1e293b', borderRadius: '12px', padding: '20px' }}>
+                  <h4 style={{ fontSize: '0.9rem', fontWeight: 800, color: '#10b981', marginBottom: '14px', textTransform: 'uppercase', letterSpacing: '0.5px' }}>
+                    MEMBER 1 (Team Leader)
+                  </h4>
+                  {viewDetailsData.member1 ? (
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: '10px', fontSize: '0.85rem' }}>
+                      <div><span style={{ color: '#94a3b8' }}>Name:</span> <strong style={{ color: '#ffffff' }}>{viewDetailsData.member1.name}</strong></div>
+                      <div><span style={{ color: '#94a3b8' }}>Email:</span> <strong style={{ color: '#38bdf8' }}>{viewDetailsData.member1.email}</strong></div>
+                      <div><span style={{ color: '#94a3b8' }}>Phone number:</span> <span style={{ color: '#e2e8f0' }}>{viewDetailsData.member1.phone || 'N/A'}</span></div>
+                      <div><span style={{ color: '#94a3b8' }}>College/institution:</span> <span style={{ color: '#e2e8f0' }}>{viewDetailsData.member1.college || 'N/A'}</span></div>
+                      {viewDetailsData.member1.github && (
+                        <div><span style={{ color: '#94a3b8' }}>GitHub:</span> <a href={viewDetailsData.member1.github} target="_blank" rel="noreferrer" style={{ color: '#38bdf8' }}>{viewDetailsData.member1.github}</a></div>
+                      )}
+                    </div>
+                  ) : (
+                    <div style={{ color: '#64748b' }}>Member 1 details unavailable</div>
+                  )}
+                </div>
+
+                {/* Member 2 */}
+                <div style={{ background: 'rgba(30, 41, 59, 0.5)', border: '1px solid #1e293b', borderRadius: '12px', padding: '20px' }}>
+                  <h4 style={{ fontSize: '0.9rem', fontWeight: 800, color: '#10b981', marginBottom: '14px', textTransform: 'uppercase', letterSpacing: '0.5px' }}>
+                    MEMBER 2 (Teammate)
+                  </h4>
+                  {viewDetailsData.member2 ? (
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: '10px', fontSize: '0.85rem' }}>
+                      <div><span style={{ color: '#94a3b8' }}>Name:</span> <strong style={{ color: '#ffffff' }}>{viewDetailsData.member2.name}</strong></div>
+                      <div><span style={{ color: '#94a3b8' }}>Email:</span> <strong style={{ color: '#38bdf8' }}>{viewDetailsData.member2.email}</strong></div>
+                      <div><span style={{ color: '#94a3b8' }}>Phone number:</span> <span style={{ color: '#e2e8f0' }}>{viewDetailsData.member2.phone || 'N/A'}</span></div>
+                      <div><span style={{ color: '#94a3b8' }}>College/institution:</span> <span style={{ color: '#e2e8f0' }}>{viewDetailsData.member2.college || 'N/A'}</span></div>
+                      {viewDetailsData.member2.github && (
+                        <div><span style={{ color: '#94a3b8' }}>GitHub:</span> <a href={viewDetailsData.member2.github} target="_blank" rel="noreferrer" style={{ color: '#38bdf8' }}>{viewDetailsData.member2.github}</a></div>
+                      )}
+                    </div>
+                  ) : (
+                    <div style={{ color: '#64748b' }}>Member 2 details unavailable</div>
+                  )}
+                </div>
+
+              </div>
+
             </div>
           </div>
         )}

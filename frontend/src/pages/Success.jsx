@@ -119,8 +119,8 @@ export default function Success() {
             </div>
 
             <div style={{ background: 'rgba(59, 130, 246, 0.08)', borderRadius: '12px', padding: '16px', marginBottom: '32px', fontSize: '0.9rem', color: '#cbd5e1', display: 'flex', alignItems: 'center', gap: '10px' }}>
-              <Mail size={20} color="#3b82f6" />
-              <span>A registration confirmation email has been dispatched to both team members.</span>
+              <CheckCircle2 size={20} color="#3b82f6" />
+              <span>Your registration & payment verification has been confirmed! Save your receipt below.</span>
             </div>
 
             {/* Action Buttons */}

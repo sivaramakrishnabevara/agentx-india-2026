@@ -12,7 +12,6 @@ from app.models.models import Admin, EventSettings, Track, Registration, Partici
 from app.schemas.schemas import AdminLogin, Token, EventSettingsUpdate, TrackCreate, AdminDashboardMetrics, AdminVerifyPaymentRequest, AdminRejectPaymentRequest
 from app.auth.security import verify_password, create_access_token, get_current_admin, get_password_hash
 from app.routes.payments import generate_next_team_id
-from app.email.mailer import send_confirmation_email, send_team_confirmation_emails, get_safe_error_message
 from app.payments.upi_handler import UPLOAD_DIR, save_payment_screenshot
 
 router = APIRouter(prefix="/api/admin", tags=["Admin Management"])
@@ -147,6 +146,61 @@ def get_teams_list(
         "page": page,
         "limit": limit,
         "teams": result
+    }
+
+@router.get("/teams/{registration_id}")
+def get_team_details_admin(
+    registration_id: int,
+    db: Session = Depends(get_db),
+    current_admin: Admin = Depends(get_current_admin)
+):
+    team = db.query(Registration).filter(Registration.id == registration_id).first()
+    if not team:
+        raise HTTPException(status_code=404, detail="Team registration not found.")
+
+    payment = db.query(Payment).filter(Payment.registration_id == team.id).first()
+
+    return {
+        "id": team.id,
+        "team_id": team.team_id or "N/A",
+        "team_name": team.team_name,
+        "college": team.college,
+        "city": team.city,
+        "state": team.state,
+        "track_id": team.track_id,
+        "track_title": team.track.title if team.track else "N/A",
+        "status": team.status,
+        "payment_status": team.payment_status,
+        "created_at": team.created_at,
+        "member1": {
+            "name": team.member1.full_name,
+            "email": team.member1.email,
+            "phone": team.member1.phone,
+            "college": team.member1.college,
+            "github": team.member1.github,
+            "linkedin": team.member1.linkedin
+        } if team.member1 else None,
+        "member2": {
+            "name": team.member2.full_name,
+            "email": team.member2.email,
+            "phone": team.member2.phone,
+            "college": team.member2.college,
+            "github": team.member2.github,
+            "linkedin": team.member2.linkedin
+        } if team.member2 else None,
+        "payment": {
+            "id": payment.id,
+            "utr": payment.utr or "N/A",
+            "amount": payment.amount,
+            "payment_method": payment.payment_method or "UPI",
+            "status": payment.status,
+            "has_screenshot": bool(payment and payment.payment_screenshot),
+            "submitted_at": payment.submitted_at,
+            "verified_at": payment.verified_at,
+            "verified_by": payment.verified_by,
+            "rejection_reason": payment.rejection_reason,
+            "admin_note": payment.admin_note
+        } if payment else None
     }
 
 @router.get("/teams/export-csv")
@@ -296,49 +350,12 @@ def verify_payment_admin(
     registration.payment_status = "VERIFIED"
     db.commit()
 
-    # 3. Trigger Confirmation Emails for both team members independently
-    track_title = registration.track.title if registration.track else "General Agentic AI"
-    m1 = registration.member1
-    m2 = registration.member2
-
-    m1_name = m1.full_name if m1 else ""
-    m1_email = m1.email if m1 else ""
-    m2_name = m2.full_name if m2 else ""
-    m2_email = m2.email if m2 else ""
-
-    email_delivery_results = {}
-    try:
-        email_delivery_results = send_team_confirmation_emails(
-            registration_id=registration.id,
-            team_id=registration.team_id,
-            team_name=registration.team_name,
-            track_title=track_title,
-            member1_name=m1_name,
-            member1_email=m1_email,
-            member2_name=m2_name,
-            member2_email=m2_email
-        )
-    except Exception as e:
-        safe_err = get_safe_error_message(e)
-        print(f"[Email Delivery Unexpected Error]: {safe_err}")
-
-    # Format email delivery summary for audit log
-    email_summary = []
-    for email_addr, status_info in email_delivery_results.items():
-        sent_str = "SUCCESS" if status_info.get("success") else "FAILED"
-        attempts = status_info.get("attempts", 0)
-        err = status_info.get("error")
-        err_str = f" ({err})" if err else ""
-        email_summary.append(f"{email_addr}: {sent_str} [Attempts: {attempts}]{err_str}")
-
-    email_log_str = "; ".join(email_summary) if email_summary else "No emails sent"
-
-    # 4. Create Audit Log
+    # 3. Create Audit Log
     log_admin_action(
         db,
         current_admin.username,
         "VERIFY_PAYMENT",
-        f"Verified UPI payment of ₹{payment.amount} for Team {registration.team_name} (UTR: {payment.utr}). Assigned Team ID: {registration.team_id}. Email Delivery: {email_log_str}"
+        f"Verified UPI payment of ₹{payment.amount} for Team {registration.team_name} (UTR: {payment.utr}). Assigned Team ID: {registration.team_id}."
     )
 
     return {
@@ -346,8 +363,7 @@ def verify_payment_admin(
         "message": "Payment verified and registration confirmed successfully.",
         "team_id": registration.team_id,
         "payment_id": payment.id,
-        "status": "VERIFIED",
-        "email_delivery": email_delivery_results
+        "status": "VERIFIED"
     }
 
 @router.post("/payments/{payment_id}/reject")

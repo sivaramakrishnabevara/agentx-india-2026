@@ -17,11 +17,13 @@ def post(path, data=None, headers=None):
     with urllib.request.urlopen(req) as resp:
         return json.loads(resp.read().decode())
 
-import requests
-
 def post_form(path, fields, headers=None):
-    r = requests.post(f"{BASE_URL}{path}", data=fields, headers=headers or {})
-    return r.json()
+    headers = headers or {}
+    encoded_data = urllib.parse.urlencode(fields).encode()
+    headers["Content-Type"] = "application/x-www-form-urlencoded"
+    req = urllib.request.Request(f"{BASE_URL}{path}", data=encoded_data, headers=headers, method="POST")
+    with urllib.request.urlopen(req) as resp:
+        return json.loads(resp.read().decode())
 
 def run_tests():
     print("--- 1. Testing Event Info ---")
@@ -78,17 +80,25 @@ def run_tests():
     token = admin_login["access_token"]
     admin_headers = {"Authorization": f"Bearer {token}"}
 
-    print("\n--- 7. Testing Admin Manual Payment Verification ---")
+    print("\n--- 7. Testing Admin View Details API Endpoint ---")
+    team_details = get(f"/api/admin/teams/{reg_id}", headers=admin_headers)
+    print("Fetched Team Details for Reg ID:", team_details.get("id"))
+    assert team_details["team_name"] == f"TestTeam_{ts}"
+    assert team_details["member1"]["email"] == f"siddharth_{ts}@test.com"
+    assert team_details["member2"]["email"] == f"ridhi_{ts}@test.com"
+    assert team_details["payment"]["utr"] == utr_val
+
+    print("\n--- 8. Testing Admin Manual Payment Verification ---")
     verify_res = post(f"/api/admin/payments/{payment_id}/verify", {"payment_id": payment_id, "admin_note": "Bank statement matched"}, headers=admin_headers)
     print("Admin Verification Result:", verify_res)
     assert verify_res["success"] == True
     print("Assigned Sequential Team ID:", verify_res["team_id"])
 
-    print("\n--- 8. Testing Admin Bulk Certificate Generation ---")
+    print("\n--- 9. Testing Admin Bulk Certificate Generation ---")
     gen_res = post("/api/admin/certificates/generate-bulk?certificate_type=PARTICIPATION", headers=admin_headers)
     print("Bulk Cert Generation Result:", gen_res)
 
-    print("\n--- 9. Testing Public Certificate Verification Portal ---")
+    print("\n--- 10. Testing Public Certificate Verification Portal ---")
     certs = get("/api/admin/certificates/list", headers=admin_headers)
     assert len(certs) > 0
     sample_cert_id = certs[0]["certificate_id"]
@@ -98,7 +108,7 @@ def run_tests():
     print("Public Certificate Verification Result - Valid:", cert_res.get("valid"))
     assert cert_res["valid"] == True
 
-    print("\n--- 10. Testing Admin Dashboard Metrics ---")
+    print("\n--- 11. Testing Admin Dashboard Metrics ---")
     metrics = get("/api/admin/metrics", headers=admin_headers)
     print("Admin Metrics:", metrics)
     assert metrics["confirmed_teams"] > 0

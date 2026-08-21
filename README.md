@@ -44,7 +44,6 @@ d:/hackthon/
 │   │   ├── auth/            # JWT & Bcrypt Admin Security
 │   │   ├── certificates/    # PNG & PDF Certificate Generator with QR codes
 │   │   ├── database/        # SQLAlchemy Engine & Session
-│   │   ├── email/           # SMTP Confirmation Mailer
 │   │   ├── models/          # ORM Models (Admin, Registration, Payment, Certificate, AuditLog)
 │   │   ├── payments/        # UPI Screenshot Security & UTR Validation
 │   │   ├── routes/          # API Routers (Public, Registration, Payments, Certificates, Admin)

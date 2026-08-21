@@ -169,6 +169,7 @@ export const api = {
   getAdminMetrics: () => request('/api/admin/metrics'),
   getAdminTeams: (query = '', status = '', trackId = '', page = 1) => 
     request(`/api/admin/teams?query=${encodeURIComponent(query)}&status_filter=${status}&track_id=${trackId}&page=${page}`),
+  getTeamDetails: (registrationId) => request(`/api/admin/teams/${registrationId}`),
   exportTeamsCSV: () => request('/api/admin/teams/export-csv'),
   updateTeamStatus: (registrationId, newStatus, trackId) => 
     request(`/api/admin/teams/${registrationId}/status?new_status=${newStatus}${trackId ? `&track_id=${trackId}` : ''}`, { method: 'PUT' }),
